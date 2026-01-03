@@ -10,14 +10,15 @@ import uuid
 app = FastAPI()
 
 # Firebase Admin (Render compatible)
-firebase_json = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+firebase_json = os.environ.get("FIREBASE_CREDENTIALS")
 
-if not firebase_admin._apps:
-    if firebase_json:
-        cred = credentials.Certificate(json.loads(firebase_json))
-        firebase_admin.initialize_app(cred)
-    else:
-        print("⚠ Firebase désactivé (variable FIREBASE_SERVICE_ACCOUNT absente)")
+if not firebase_json:
+    raise ValueError("FIREBASE_CREDENTIALS not set")
+
+cred_dict = json.loads(firebase_json)
+cred = credentials.Certificate(cred_dict)
+
+firebase_admin.initialize_app(cred)
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
