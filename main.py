@@ -1,63 +1,86 @@
-import json
-from fastapi import FastAPI, UploadFile, File
-from pydantic import BaseModel
-import firebase_admin
-from firebase_admin import credentials, auth
-from reportlab.pdfgen import canvas
 import os
 import uuid
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from pydantic import BaseModel
+from reportlab.pdfgen import canvas
+from typing import List
+from dotenv import load_dotenv
 
-app = FastAPI()
+# OpenAI
+import openai
 
-# Firebase Admin (Render compatible)
-firebase_json = os.environ.get("FIREBASE_CREDENTIALS")
+load_dotenv()  # si tu veux tester en local
 
-if not firebase_json:
-    raise ValueError("FIREBASE_CREDENTIALS not set")
+OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
+if not OPENAI_KEY:
+    raise ValueError("OPENAI_API_KEY not set")
 
-cred_dict = json.loads(firebase_json)
-cred = credentials.Certificate(cred_dict)
+openai.api_key = OPENAI_KEY
 
-firebase_admin.initialize_app(cred)
+# ================= APP =================
+app = FastAPI(title="MASMM-IA Backend OpenAI")
 
 UPLOAD_DIR = "uploads"
+EXPORT_DIR = "exports"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(EXPORT_DIR, exist_ok=True)
 
-class Chat(BaseModel):
+# ================= MEMORY =================
+conversation_memory = {}
+
+# ================= MODELS =================
+class ChatRequest(BaseModel):
     message: str
+    session_id: str | None = None
 
+class ChatResponse(BaseModel):
+    response: str
+
+# ================= ROUTES =================
 @app.get("/")
 def root():
-    return {"status": "Backend OK"}
+    return {"status": "Backend MASMM-IA + OpenAI OK"}
 
-@app.post("/auth")
-def verify_token(token: str):
-    decoded = auth.verify_id_token(token)
-    return {"uid": decoded["uid"]}
+@app.post("/chat", response_model=ChatResponse)
+async def chat(data: ChatRequest):
+    session = data.session_id or "default"
+    history: List[dict] = conversation_memory.setdefault(session, [])
 
-@app.post("/chat")
-def chat(data: Chat):
-    msg = data.message.lower()
-    if "bonjour" in msg:
-        reply = "Bonjour, comment puis-je t’aider ?"
-    elif "temps" in msg:
-        reply = "Je suis une IA hors ligne intelligente."
-    else:
-        reply = f"Réponse IA : {data.message}"
+    # Ajouter le message utilisateur à l'historique
+    history.append({"role": "user", "content": data.message})
+
+    try:
+        # Appel OpenAI Chat
+        completion = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=history,
+            temperature=0.7,
+            max_tokens=500
+        )
+        reply = completion.choices[0].message.content.strip()
+    except Exception as e:
+        reply = f"Erreur OpenAI : {e}"
+
+    # Ajouter la réponse à l'historique et limiter mémoire à 20 messages
+    history.append({"role": "assistant", "content": reply})
+    conversation_memory[session] = history[-20:]
+
     return {"response": reply}
 
+# ================= FILE UPLOAD =================
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
-    path = f"{UPLOAD_DIR}/{uuid.uuid4()}_{file.filename}"
+    filename = f"{uuid.uuid4()}_{file.filename}"
+    path = os.path.join(UPLOAD_DIR, filename)
     with open(path, "wb") as f:
         f.write(await file.read())
     return {"file": path}
 
+# ================= EXPORT PDF =================
 @app.post("/export/pdf")
 def export_pdf(text: str):
-    filename = f"exports/{uuid.uuid4()}.pdf"
-    os.makedirs("exports", exist_ok=True)
+    filename = f"{EXPORT_DIR}/{uuid.uuid4()}.pdf"
     c = canvas.Canvas(filename)
-    c.drawString(50, 800, text)
+    c.drawString(40, 800, text)
     c.save()
     return {"file": filename}

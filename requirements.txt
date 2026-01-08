@@ -1,5 +1,6 @@
 fastapi
-uvicorn
-python-multipart
-firebase-admin
+uvicorn[standard]
+python-dotenv
+openai
 reportlab
+python-multipart
