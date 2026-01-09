@@ -5,17 +5,22 @@ from pydantic import BaseModel
 from reportlab.pdfgen import canvas
 from typing import List
 from dotenv import load_dotenv
+from openai import OpenAI
 
-# OpenAI
-import openai
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
-load_dotenv()  # si tu veux tester en local
+def chat_online(message):
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are ChatGPT, helpful and intelligent."},
+            {"role": "user", "content": message}
+        ]
+    )
 
-OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
-if not OPENAI_KEY:
-    raise ValueError("OPENAI_API_KEY not set")
-
-openai.api_key = OPENAI_KEY
+    return response.choices[0].message.content
 
 # ================= APP =================
 app = FastAPI(title="MASMM-IA Backend OpenAI")

@@ -1,6 +1,6 @@
 fastapi
 uvicorn[standard]
 python-dotenv
-openai
 reportlab
 python-multipart
+openai>=1.0.0
