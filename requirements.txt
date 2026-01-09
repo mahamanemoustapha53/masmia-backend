@@ -1,7 +1,6 @@
 fastapi
-uvicorn[standard]
-python-dotenv
-openai
-reportlab
-python-multipart
+uvicorn
 openai>=1.0.0
+python-multipart
+pydantic
+PyMuPDF

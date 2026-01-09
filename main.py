@@ -1,91 +1,128 @@
 import os
 import uuid
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import asyncio
+import base64
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from reportlab.pdfgen import canvas
-from typing import List
-from dotenv import load_dotenv
+from typing import Dict, List
 from openai import OpenAI
+import fitz  # PyMuPDF
 
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
-)
-
-def chat_online(message):
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are ChatGPT, helpful and intelligent."},
-            {"role": "user", "content": message}
-        ]
-    )
-
-    return response.choices[0].message.content
+# ================= OPENAI CLIENT =================
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ================= APP =================
-app = FastAPI(title="MASMM-IA Backend OpenAI")
-
-UPLOAD_DIR = "uploads"
-EXPORT_DIR = "exports"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(EXPORT_DIR, exist_ok=True)
+app = FastAPI(title="MASMM-IA Backend")
 
 # ================= MEMORY =================
-conversation_memory = {}
+conversation_memory: Dict[str, List[dict]] = {}
 
 # ================= MODELS =================
 class ChatRequest(BaseModel):
+    session_id: str
     message: str
-    session_id: str | None = None
 
-class ChatResponse(BaseModel):
-    response: str
-
-# ================= ROUTES =================
+# ================= ROOT =================
 @app.get("/")
 def root():
-    return {"status": "Backend MASMM-IA + OpenAI OK"}
+    return {"status": "MASMM-IA backend OK"}
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat(data: ChatRequest):
-    session = data.session_id or "default"
-    history: List[dict] = conversation_memory.setdefault(session, [])
+# ================= CHAT (NON STREAM) =================
+@app.post("/chat")
+async def chat(req: ChatRequest):
+    session = conversation_memory.setdefault(req.session_id, [])
+    session.append({"role": "user", "content": req.message})
 
-    # Ajouter le message utilisateur à l'historique
-    history.append({"role": "user", "content": data.message})
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Tu es une IA comme ChatGPT."},
+            *session
+        ]
+    )
 
-    try:
-        # Appel OpenAI Chat
-        completion = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=history,
-            temperature=0.7,
-            max_tokens=500
+    answer = response.choices[0].message.content
+    session.append({"role": "assistant", "content": answer})
+
+    return {"response": answer}
+
+# ================= CHAT STREAM =================
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
+
+    session = conversation_memory.setdefault(req.session_id, [])
+    session.append({"role": "user", "content": req.message})
+
+    async def generator():
+        collected = ""
+
+        stream = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Tu es une IA comme ChatGPT."},
+                *session
+            ],
+            stream=True
         )
-        reply = completion.choices[0].message.content.strip()
-    except Exception as e:
-        reply = f"Erreur OpenAI : {e}"
 
-    # Ajouter la réponse à l'historique et limiter mémoire à 20 messages
-    history.append({"role": "assistant", "content": reply})
-    conversation_memory[session] = history[-20:]
+        for chunk in stream:
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                collected += delta.content
+                yield delta.content
+                await asyncio.sleep(0.01)
 
-    return {"response": reply}
+        session.append({"role": "assistant", "content": collected})
 
-# ================= FILE UPLOAD =================
+    return StreamingResponse(generator(), media_type="text/plain")
+
+# ================= PDF / TXT =================
 @app.post("/upload")
-async def upload(file: UploadFile = File(...)):
-    filename = f"{uuid.uuid4()}_{file.filename}"
-    path = os.path.join(UPLOAD_DIR, filename)
-    with open(path, "wb") as f:
-        f.write(await file.read())
-    return {"file": path}
+async def upload_file(file: UploadFile = File(...)):
+    content = await file.read()
 
-# ================= EXPORT PDF =================
-@app.post("/export/pdf")
-def export_pdf(text: str):
-    filename = f"{EXPORT_DIR}/{uuid.uuid4()}.pdf"
-    c = canvas.Canvas(filename)
-    c.drawString(40, 800, text)
-    c.save()
-    return {"file": filename}
+    if file.filename.endswith(".txt"):
+        text = content.decode("utf-8")
+
+    elif file.filename.endswith(".pdf"):
+        doc = fitz.open(stream=content, filetype="pdf")
+        text = "\n".join(page.get_text() for page in doc)
+
+    else:
+        return {"analysis": "Format non supporté"}
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Analyse et résume ce document."},
+            {"role": "user", "content": text[:12000]}
+        ]
+    )
+
+    return {"analysis": response.choices[0].message.content}
+
+# ================= VISION =================
+@app.post("/vision")
+async def vision(image: UploadFile = File(...)):
+    img_bytes = await image.read()
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Décris cette image en détail."},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64.b64encode(img_bytes).decode()}"
+                        }
+                    }
+                ]
+            }
+        ]
+    )
+
+    return {"response": response.choices[0].message.content}
